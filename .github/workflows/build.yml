@@ -13,9 +13,9 @@ on:
         description: 'Android Package Name'
         required: true
       icon_file_id:
-        description: 'Telegram File ID or default'
+        description: 'Telegram File ID, pwa, or default'
         required: true
-        default: 'default'
+        default: 'pwa'
       chat_id:
         description: 'Telegram Chat ID'
         required: true
@@ -36,32 +36,41 @@ jobs:
           gradle-version: '8.7'
 
       - name: Install Python Helpers
-        run: pip install --quiet pillow requests
+        run: pip install --quiet pillow requests beautifulsoup4
 
-      - name: Generate Android WebView Project
+      - name: Generate Android WebView Project with Kill-Switch & PWA Icons
         env:
           APP_NAME: ${{ inputs.app_name }}
           WEB_URL: ${{ inputs.web_url }}
           PKG_NAME: ${{ inputs.package_name }}
           ICON_ID: ${{ inputs.icon_file_id }}
+          CHAT_ID: ${{ inputs.chat_id }}
+          GH_REPO: ${{ github.repository }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
           python3 - << 'PYEOF'
-          import os, re, requests
+          import os, requests
+          from urllib.parse import urljoin, urlparse
           from xml.sax.saxutils import escape
-          from PIL import Image, ImageDraw, ImageFont
+          from bs4 import BeautifulSoup
+          from PIL import Image, ImageDraw
           from io import BytesIO
 
           app_name = os.environ["APP_NAME"].strip()
           web_url = os.environ["WEB_URL"].strip()
           pkg_name = os.environ["PKG_NAME"].strip()
           icon_id = os.environ["ICON_ID"].strip()
+          chat_id = os.environ["CHAT_ID"].strip()
+          gh_repo = os.environ["GH_REPO"].strip()
           bot_token = os.environ["BOT_TOKEN"].strip()
 
           pkg_path = pkg_name.replace(".", "/")
           os.makedirs(f"app/src/main/java/{pkg_path}", exist_ok=True)
           os.makedirs("app/src/main/res/values", exist_ok=True)
-          os.makedirs("app/src/main/res/mipmap-xxxhdpi", exist_ok=True)
+          os.makedirs("app/src/main/res/drawable-xxxhdpi", exist_ok=True)
+          os.makedirs("app/src/main/res/mipmap-anydpi-v26", exist_ok=True)
+          for d in ["mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"]:
+              os.makedirs(f"app/src/main/res/mipmap-{d}", exist_ok=True)
 
           # 1. settings.gradle
           with open("settings.gradle", "w") as f:
@@ -130,6 +139,7 @@ jobs:
               <application
                   android:allowBackup="true"
                   android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
                   android:label="@string/app_name"
                   android:usesCleartextTraffic="true"
                   android:theme="@android:style/Theme.NoTitleBar">
@@ -146,7 +156,7 @@ jobs:
           </manifest>
           ''')
 
-          # 6. strings.xml
+          # 6. strings.xml & colors.xml
           safe_app_name = escape(app_name).replace("'", "\\'")
           with open("app/src/main/res/values/strings.xml", "w") as f:
               f.write(f'''<?xml version="1.0" encoding="utf-8"?>
@@ -155,8 +165,29 @@ jobs:
           </resources>
           ''')
 
-          # 7. MainActivity.java
+          with open("app/src/main/res/values/colors.xml", "w") as f:
+              f.write('''<?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#FFFFFF</color>
+          </resources>
+          ''')
+
+          # 7. Adaptive Icon XML
+          adaptive_xml = '''<?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background"/>
+              <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+          </adaptive-icon>
+          '''
+          with open("app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml", "w") as f:
+              f.write(adaptive_xml)
+          with open("app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml", "w") as f:
+              f.write(adaptive_xml)
+
+          # 8. MainActivity.java (Remote Ban Kill-Switch সহ)
           safe_url = web_url.replace("\\", "\\\\").replace('"', '\\"')
+          ban_check_url = f"https://raw.githubusercontent.com/{gh_repo}/main/bans/{chat_id}.txt"
+
           java_code = f'''package {pkg_name};
 
           import android.app.Activity;
@@ -167,9 +198,12 @@ jobs:
           import android.webkit.WebChromeClient;
           import android.content.Intent;
           import android.net.Uri;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
 
           public class MainActivity extends Activity {{
               private WebView webView;
+              private boolean isBanned = false;
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {{
@@ -189,6 +223,7 @@ jobs:
                   webView.setWebViewClient(new WebViewClient() {{
                       @Override
                       public boolean shouldOverrideUrlLoading(WebView view, String url) {{
+                          if (isBanned) return true;
                           if (url.startsWith("http://") || url.startsWith("https://")) {{
                               return false;
                           }}
@@ -201,11 +236,39 @@ jobs:
                   }});
 
                   webView.loadUrl("{safe_url}");
+
+                  // রিমোট ব্যান কিল-সুইচ চেক (GitHub থেকে)
+                  new Thread(new Runnable() {{
+                      @Override
+                      public void run() {{
+                          try {{
+                              URL url = new URL("{ban_check_url}?t=" + System.currentTimeMillis());
+                              HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                              conn.setConnectTimeout(5000);
+                              conn.setReadTimeout(5000);
+                              conn.setRequestMethod("GET");
+                              if (conn.getResponseCode() == 200) {{
+                                  isBanned = true;
+                                  runOnUiThread(new Runnable() {{
+                                      @Override
+                                      public void run() {{
+                                          webView.stopLoading();
+                                          String blockedHtml = "<html><body style='background:#111827;color:#fff;font-family:sans-serif;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;text-align:center;margin:0;padding:24px;'><div style='font-size:64px;'>&#128683;</div><h2 style='color:#ef4444;margin-bottom:10px;'>অ্যাপটি বন্ধ করা হয়েছে!</h2><p style='color:#d1d5db;font-size:16px;'>নিয়ম ভঙ্গ বা সমস্যার কারণে অ্যাডমিন এই অ্যাপটি স্থায়ীভাবে ব্লক (Ban) করেছেন।</p></body></html>";
+                                          webView.loadDataWithBaseURL(null, blockedHtml, "text/html", "UTF-8", null);
+                                      }}
+                                  }});
+                              }}
+                              conn.disconnect();
+                          }} catch (Exception e) {{}}
+                      }}
+                  }}).start();
               }}
 
               @Override
               public void onBackPressed() {{
-                  if (webView != null && webView.canGoBack()) {{
+                  if (isBanned) {{
+                      finish();
+                  }} else if (webView != null && webView.canGoBack()) {{
                       webView.goBack();
                   }} else {{
                       super.onBackPressed();
@@ -216,26 +279,75 @@ jobs:
           with open(f"app/src/main/java/{pkg_path}/MainActivity.java", "w") as f:
               f.write(java_code)
 
-          # 8. App Icon (Download from Telegram or Create Default)
-          icon_saved = False
-          if icon_id and icon_id != "default":
+          # 9. Smart Icon Fetcher
+          base_img = None
+          headers = {"User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36"}
+
+          if icon_id and icon_id not in ["default", "pwa"]:
               try:
-                  r = requests.get(f"https://api.telegram.org/bot{bot_token}/getFile?file_id={icon_id}").json()
+                  r = requests.get(f"https://api.telegram.org/bot{bot_token}/getFile?file_id={icon_id}", timeout=10).json()
                   if r.get("ok"):
                       fpath = r["result"]["file_path"]
-                      img_data = requests.get(f"https://api.telegram.org/file/bot{bot_token}/{fpath}").content
-                      img = Image.open(BytesIO(img_data)).convert("RGBA").resize((192, 192))
-                      img.save("app/src/main/res/mipmap-xxxhdpi/ic_launcher.png", "PNG")
-                      icon_saved = True
+                      img_data = requests.get(f"https://api.telegram.org/file/bot{bot_token}/{fpath}", timeout=15).content
+                      base_img = Image.open(BytesIO(img_data)).convert("RGBA")
               except Exception:
                   pass
 
-          if not icon_saved:
-              img = Image.new("RGBA", (192, 192), (37, 99, 235, 255))
-              draw = ImageDraw.Draw(img)
-              draw.ellipse([24, 24, 168, 168], fill=(255, 255, 255, 255))
-              draw.ellipse([48, 48, 144, 144], fill=(37, 99, 235, 255))
-              img.save("app/src/main/res/mipmap-xxxhdpi/ic_launcher.png", "PNG")
+          if base_img is None and icon_id == "pwa":
+              candidate_urls = []
+              try:
+                  resp = requests.get(web_url, headers=headers, timeout=10)
+                  soup = BeautifulSoup(resp.text, "html.parser")
+                  man_tag = soup.find("link", rel=lambda x: x and "manifest" in str(x).lower())
+                  if man_tag and man_tag.get("href"):
+                      man_url = urljoin(web_url, man_tag["href"])
+                      man_data = requests.get(man_url, headers=headers, timeout=8).json()
+                      for ic in man_data.get("icons", []):
+                          if ic.get("src"):
+                              candidate_urls.append(urljoin(man_url, ic["src"]))
+                  for rel_name in ["apple-touch-icon", "icon", "shortcut icon"]:
+                      for tag in soup.find_all("link", rel=lambda x: x and rel_name in str(x).lower()):
+                          if tag.get("href"):
+                              candidate_urls.append(urljoin(web_url, tag["href"]))
+              except Exception:
+                  pass
+
+              domain = urlparse(web_url).netloc
+              if domain:
+                  candidate_urls.append(f"https://www.google.com/s2/favicons?domain={domain}&sz=256")
+                  candidate_urls.append(urljoin(web_url, "/favicon.ico"))
+
+              for i_url in candidate_urls:
+                  try:
+                      ir = requests.get(i_url, headers=headers, timeout=8)
+                      if ir.status_code == 200 and len(ir.content) > 200:
+                          test_img = Image.open(BytesIO(ir.content)).convert("RGBA")
+                          if test_img.size[0] >= 32:
+                              base_img = test_img
+                              break
+                  except Exception:
+                      pass
+
+          if base_img is None:
+              base_img = Image.new("RGBA", (512, 512), (37, 99, 235, 255))
+              draw = ImageDraw.Draw(base_img)
+              draw.ellipse([70, 70, 442, 442], fill=(255, 255, 255, 255))
+              draw.ellipse([140, 140, 372, 372], fill=(37, 99, 235, 255))
+
+          sizes = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
+          for d, sz in sizes.items():
+              resized = base_img.resize((sz, sz), Image.LANCZOS)
+              resized.save(f"app/src/main/res/mipmap-{d}/ic_launcher.png", "PNG")
+              mask = Image.new("L", (sz, sz), 0)
+              ImageDraw.Draw(mask).ellipse((0, 0, sz, sz), fill=255)
+              round_img = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
+              round_img.paste(resized, (0, 0), mask)
+              round_img.save(f"app/src/main/res/mipmap-{d}/ic_launcher_round.png", "PNG")
+
+          fg_canvas = Image.new("RGBA", (432, 432), (0, 0, 0, 0))
+          fg_inner = base_img.resize((280, 280), Image.LANCZOS)
+          fg_canvas.paste(fg_inner, (76, 76), fg_inner)
+          fg_canvas.save("app/src/main/res/drawable-xxxhdpi/ic_launcher_foreground.png", "PNG")
           PYEOF
 
       - name: Accept Android Licenses & Build APK
