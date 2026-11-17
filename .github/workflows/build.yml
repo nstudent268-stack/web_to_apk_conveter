@@ -1,0 +1,271 @@
+name: Build Web2APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'App Name'
+        required: true
+      web_url:
+        description: 'Website URL'
+        required: true
+      package_name:
+        description: 'Android Package Name'
+        required: true
+      icon_file_id:
+        description: 'Telegram File ID or default'
+        required: true
+        default: 'default'
+      chat_id:
+        description: 'Telegram Chat ID'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Install Python Helpers
+        run: pip install --quiet pillow requests
+
+      - name: Generate Android WebView Project
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          WEB_URL: ${{ inputs.web_url }}
+          PKG_NAME: ${{ inputs.package_name }}
+          ICON_ID: ${{ inputs.icon_file_id }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          python3 - << 'PYEOF'
+          import os, re, requests
+          from xml.sax.saxutils import escape
+          from PIL import Image, ImageDraw, ImageFont
+          from io import BytesIO
+
+          app_name = os.environ["APP_NAME"].strip()
+          web_url = os.environ["WEB_URL"].strip()
+          pkg_name = os.environ["PKG_NAME"].strip()
+          icon_id = os.environ["ICON_ID"].strip()
+          bot_token = os.environ["BOT_TOKEN"].strip()
+
+          pkg_path = pkg_name.replace(".", "/")
+          os.makedirs(f"app/src/main/java/{pkg_path}", exist_ok=True)
+          os.makedirs("app/src/main/res/values", exist_ok=True)
+          os.makedirs("app/src/main/res/mipmap-xxxhdpi", exist_ok=True)
+
+          # 1. settings.gradle
+          with open("settings.gradle", "w") as f:
+              f.write('''pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "Web2Apk"
+          include ':app'
+          ''')
+
+          # 2. build.gradle (root)
+          with open("build.gradle", "w") as f:
+              f.write('''plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          ''')
+
+          # 3. gradle.properties
+          with open("gradle.properties", "w") as f:
+              f.write("org.gradle.jvmargs=-Xmx2048m\nandroid.useAndroidX=false\n")
+
+          # 4. app/build.gradle
+          with open("app/build.gradle", "w") as f:
+              f.write(f'''plugins {{
+              id 'com.android.application'
+          }}
+          android {{
+              namespace "{pkg_name}"
+              compileSdk 34
+              defaultConfig {{
+                  applicationId "{pkg_name}"
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }}
+              buildTypes {{
+                  debug {{
+                      minifyEnabled false
+                  }}
+              }}
+              compileOptions {{
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }}
+          }}
+          ''')
+
+          # 5. AndroidManifest.xml
+          with open("app/src/main/AndroidManifest.xml", "w") as f:
+              f.write('''<?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@android:style/Theme.NoTitleBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          ''')
+
+          # 6. strings.xml
+          safe_app_name = escape(app_name).replace("'", "\\'")
+          with open("app/src/main/res/values/strings.xml", "w") as f:
+              f.write(f'''<?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">{safe_app_name}</string>
+          </resources>
+          ''')
+
+          # 7. MainActivity.java
+          safe_url = web_url.replace("\\", "\\\\").replace('"', '\\"')
+          java_code = f'''package {pkg_name};
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.webkit.WebChromeClient;
+          import android.content.Intent;
+          import android.net.Uri;
+
+          public class MainActivity extends Activity {{
+              private WebView webView;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {{
+                  super.onCreate(savedInstanceState);
+                  webView = new WebView(this);
+                  setContentView(webView);
+
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setDatabaseEnabled(true);
+                  settings.setAllowFileAccess(true);
+                  settings.setLoadWithOverviewMode(true);
+                  settings.setUseWideViewPort(true);
+
+                  webView.setWebChromeClient(new WebChromeClient());
+                  webView.setWebViewClient(new WebViewClient() {{
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, String url) {{
+                          if (url.startsWith("http://") || url.startsWith("https://")) {{
+                              return false;
+                          }}
+                          try {{
+                              Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                              startActivity(intent);
+                          }} catch (Exception e) {{}}
+                          return true;
+                      }}
+                  }});
+
+                  webView.loadUrl("{safe_url}");
+              }}
+
+              @Override
+              public void onBackPressed() {{
+                  if (webView != null && webView.canGoBack()) {{
+                      webView.goBack();
+                  }} else {{
+                      super.onBackPressed();
+                  }}
+              }}
+          }}
+          '''
+          with open(f"app/src/main/java/{pkg_path}/MainActivity.java", "w") as f:
+              f.write(java_code)
+
+          # 8. App Icon (Download from Telegram or Create Default)
+          icon_saved = False
+          if icon_id and icon_id != "default":
+              try:
+                  r = requests.get(f"https://api.telegram.org/bot{bot_token}/getFile?file_id={icon_id}").json()
+                  if r.get("ok"):
+                      fpath = r["result"]["file_path"]
+                      img_data = requests.get(f"https://api.telegram.org/file/bot{bot_token}/{fpath}").content
+                      img = Image.open(BytesIO(img_data)).convert("RGBA").resize((192, 192))
+                      img.save("app/src/main/res/mipmap-xxxhdpi/ic_launcher.png", "PNG")
+                      icon_saved = True
+              except Exception:
+                  pass
+
+          if not icon_saved:
+              img = Image.new("RGBA", (192, 192), (37, 99, 235, 255))
+              draw = ImageDraw.Draw(img)
+              draw.ellipse([24, 24, 168, 168], fill=(255, 255, 255, 255))
+              draw.ellipse([48, 48, 144, 144], fill=(37, 99, 235, 255))
+              img.save("app/src/main/res/mipmap-xxxhdpi/ic_launcher.png", "PNG")
+          PYEOF
+
+      - name: Accept Android Licenses & Build APK
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true
+          gradle assembleDebug --no-daemon
+
+      - name: Send APK to Telegram User
+        if: success()
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ inputs.chat_id }}
+          APP_NAME: ${{ inputs.app_name }}
+          WEB_URL: ${{ inputs.web_url }}
+        run: |
+          SAFE_FILE=$(echo "$APP_NAME" | tr -cd '[:alnum:]_-')
+          if [ -z "$SAFE_FILE" ]; then SAFE_FILE="WebApp"; fi
+          cp app/build/outputs/apk/debug/app-debug.apk "${SAFE_FILE}.apk"
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
+            -F chat_id="${CHAT_ID}" \
+            -F document=@"${SAFE_FILE}.apk" \
+            -F caption="🎉 <b>আপনার Android APK সফলভাবে তৈরি হয়েছে!</b>%0A%0A📱 <b>অ্যাপের নাম:</b> ${APP_NAME}%0A🌐 <b>ওয়েবসাইট:</b> ${WEB_URL}%0A%0A👇 ফাইলটি ডাউনলোড করে মোবাইলে ইনস্টল করুন!" \
+            -F parse_mode="HTML"
+
+      - name: Notify Failure
+        if: failure()
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ inputs.chat_id }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d chat_id="${CHAT_ID}" \
+            -d text="❌ দুঃখিত! APK ফাইল তৈরি করতে সার্ভার সমস্যা হয়েছে। অনুগ্রহ করে সঠিক ওয়েবসাইট লিংক দিয়ে আবার চেষ্টা করুন।"
