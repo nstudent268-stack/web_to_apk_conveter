@@ -270,6 +270,8 @@ jobs:
           import android.webkit.WebChromeClient;
           import android.content.Intent;
           import android.net.Uri;
+          import java.io.BufferedReader;
+          import java.io.InputStreamReader;
           import java.net.HttpURLConnection;
           import java.net.URL;
 
@@ -277,17 +279,31 @@ jobs:
               private WebView webView;
               private boolean isBanned = false;
 
-              private boolean checkUrlExists(String checkUrl) {{
+              private boolean isRemoteBanned(String checkUrl) {{
                   if (checkUrl == null || checkUrl.isEmpty()) return false;
                   try {{
                       URL url = new URL(checkUrl + "?t=" + System.currentTimeMillis());
                       HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                      conn.setUseCaches(false);
+                      conn.setRequestProperty("Cache-Control", "no-cache");
+                      conn.setRequestProperty("Pragma", "no-cache");
                       conn.setConnectTimeout(3000);
                       conn.setReadTimeout(3000);
                       conn.setRequestMethod("GET");
                       int code = conn.getResponseCode();
+                      if (code == 200) {{
+                          BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                          StringBuilder sb = new StringBuilder();
+                          String line;
+                          while ((line = br.readLine()) != null) {{
+                              sb.append(line);
+                          }}
+                          br.close();
+                          conn.disconnect();
+                          return sb.toString().trim().contains("BANNED");
+                      }}
                       conn.disconnect();
-                      return code == 200;
+                      return false;
                   }} catch (Exception e) {{
                       return false;
                   }}
@@ -325,15 +341,14 @@ jobs:
                       }}
                   }});
 
-                  // প্রথমে একটি ক্লিন লোডিং পেজ দেখানো হচ্ছে যাতে ব্যান করা লিংক ১ সেকেন্ডের জন্যও না দেখায়
                   String loadingHtml = "<html><body style='background:#0f172a;color:#e2e8f0;font-family:sans-serif;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;margin:0;'><div style='font-size:20px;font-weight:bold;'>Loading...</div></body></html>";
                   webView.loadDataWithBaseURL(null, loadingHtml, "text/html", "UTF-8", null);
 
                   new Thread(new Runnable() {{
                       @Override
                       public void run() {{
-                          boolean userBlocked = checkUrlExists("{ban_user_url}");
-                          boolean linkBlocked = checkUrlExists("{ban_link_url}");
+                          boolean userBlocked = isRemoteBanned("{ban_user_url}");
+                          boolean linkBlocked = isRemoteBanned("{ban_link_url}");
 
                           if (userBlocked || linkBlocked) {{
                               isBanned = true;
