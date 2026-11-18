@@ -116,6 +116,7 @@ jobs:
               os.makedirs(f"app/src/main/res/mipmap-{d}", exist_ok=True)
 
           target_load_url = web_url
+          target_domain = ""
           if build_mode == "html":
               target_load_url = "file:///android_asset/index.html"
               html_saved = False
@@ -134,6 +135,12 @@ jobs:
                   content = html_code if (html_code and html_code != "none") else "<h1>Hello World</h1>"
                   with open("app/src/main/assets/index.html", "w", encoding="utf-8") as hf:
                       hf.write(content)
+          else:
+              target_domain = urlparse(web_url).netloc.lower()
+              if ":" in target_domain:
+                  target_domain = target_domain.split(":")[0]
+              if target_domain.startswith("www."):
+                  target_domain = target_domain[4:]
 
           with open("settings.gradle", "w", encoding="utf-8") as f:
               f.write('''pluginManagement {
@@ -250,7 +257,8 @@ jobs:
               f.write(adaptive_xml)
 
           safe_url = target_load_url.replace("\\", "\\\\").replace('"', '\\"')
-          ban_check_url = f"https://raw.githubusercontent.com/{gh_repo}/main/bans/{chat_id}.txt"
+          ban_user_url = f"https://raw.githubusercontent.com/{gh_repo}/main/bans/{chat_id}.txt"
+          ban_link_url = f"https://raw.githubusercontent.com/{gh_repo}/main/link_bans/{target_domain}.txt" if target_domain else ""
 
           java_code = f'''package {pkg_name};
 
@@ -268,6 +276,22 @@ jobs:
           public class MainActivity extends Activity {{
               private WebView webView;
               private boolean isBanned = false;
+
+              private boolean checkUrlExists(String checkUrl) {{
+                  if (checkUrl == null || checkUrl.isEmpty()) return false;
+                  try {{
+                      URL url = new URL(checkUrl + "?t=" + System.currentTimeMillis());
+                      HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                      conn.setConnectTimeout(3000);
+                      conn.setReadTimeout(3000);
+                      conn.setRequestMethod("GET");
+                      int code = conn.getResponseCode();
+                      conn.disconnect();
+                      return code == 200;
+                  }} catch (Exception e) {{
+                      return false;
+                  }}
+              }}
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {{
@@ -301,30 +325,33 @@ jobs:
                       }}
                   }});
 
-                  webView.loadUrl("{safe_url}");
+                  // প্রথমে একটি ক্লিন লোডিং পেজ দেখানো হচ্ছে যাতে ব্যান করা লিংক ১ সেকেন্ডের জন্যও না দেখায়
+                  String loadingHtml = "<html><body style='background:#0f172a;color:#e2e8f0;font-family:sans-serif;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;margin:0;'><div style='font-size:20px;font-weight:bold;'>Loading...</div></body></html>";
+                  webView.loadDataWithBaseURL(null, loadingHtml, "text/html", "UTF-8", null);
 
                   new Thread(new Runnable() {{
                       @Override
                       public void run() {{
-                          try {{
-                              URL url = new URL("{ban_check_url}?t=" + System.currentTimeMillis());
-                              HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                              conn.setConnectTimeout(5000);
-                              conn.setReadTimeout(5000);
-                              conn.setRequestMethod("GET");
-                              if (conn.getResponseCode() == 200) {{
-                                  isBanned = true;
-                                  runOnUiThread(new Runnable() {{
-                                      @Override
-                                      public void run() {{
-                                          webView.stopLoading();
-                                          String blockedHtml = "<html><body style='background:#111827;color:#fff;font-family:sans-serif;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;text-align:center;margin:0;padding:24px;'><div style='font-size:64px;'>&#128683;</div><h2 style='color:#ef4444;margin-bottom:10px;'>App Blocked!</h2><p style='color:#d1d5db;font-size:16px;'>Admin has banned this application.</p></body></html>";
-                                          webView.loadDataWithBaseURL(null, blockedHtml, "text/html", "UTF-8", null);
-                                      }}
-                                  }});
-                              }}
-                              conn.disconnect();
-                          }} catch (Exception e) {{}}
+                          boolean userBlocked = checkUrlExists("{ban_user_url}");
+                          boolean linkBlocked = checkUrlExists("{ban_link_url}");
+
+                          if (userBlocked || linkBlocked) {{
+                              isBanned = true;
+                              runOnUiThread(new Runnable() {{
+                                  @Override
+                                  public void run() {{
+                                      String blockedHtml = "<html><body style='background:#111827;color:#fff;font-family:sans-serif;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;text-align:center;margin:0;padding:24px;'><div style='background:#1f2937;border:2px solid #ef4444;border-radius:16px;padding:28px;max-width:340px;'><div style='font-size:60px;margin-bottom:12px;'>&#128683;</div><h2 style='color:#ef4444;margin:0 0 12px 0;'>অ্যাপ / লিংকটি ব্যান করা হয়েছে!</h2><p style='color:#d1d5db;font-size:15px;line-height:1.5;margin:0;'>নিয়ম ভঙ্গ বা সমস্যার কারণে অ্যাডমিন এই লিংক/অ্যাপটি স্থায়ীভাবে বন্ধ (Ban) করেছেন।</p></div></body></html>";
+                                      webView.loadDataWithBaseURL(null, blockedHtml, "text/html", "UTF-8", null);
+                                  }}
+                              }});
+                          }} else {{
+                              runOnUiThread(new Runnable() {{
+                                  @Override
+                                  public void run() {{
+                                      webView.loadUrl("{safe_url}");
+                                  }}
+                              }});
+                          }}
                       }}
                   }}).start();
               }}
@@ -488,7 +515,7 @@ jobs:
           CHAT_ID: ${{ inputs.chat_id }}
           MSG_ID: ${{ inputs.progress_msg_id }}
         run: |
-          FAIL_TXT="❌ <b>APK তৈরি ব্যর্থ হয়েছে!</b>%0A%0Aসার্ভারে সমস্যা হয়েছে বা কোডে ভুল রয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
+          FAIL_TXT="❌ <b>APK তৈরি ব্যর্থ হয়েছে!</b>%0A%0Aসার্ভারে সমস্যা হয়েছে বা প্যাকেজ নেম/কোডে ভুল রয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
           if [ -n "$MSG_ID" ]; then
             curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "parse_mode=HTML" -d "text=${FAIL_TXT}" >/dev/null || true
           else
