@@ -1,66 +1,114 @@
-name: Build Web2APK
+name: Build Web2APK & HTML2APK
 
 on:
   workflow_dispatch:
     inputs:
+      build_mode:
+        description: 'url or html'
+        required: true
+        default: 'url'
       app_name:
         description: 'App Name'
         required: true
       web_url:
         description: 'Website URL'
-        required: true
+        required: false
+        default: 'file:///android_asset/index.html'
+      html_file_id:
+        description: 'Telegram HTML Document file_id or none'
+        required: false
+        default: 'none'
+      html_code:
+        description: 'Raw HTML Code or none'
+        required: false
+        default: 'none'
       package_name:
         description: 'Android Package Name'
         required: true
+      app_version:
+        description: 'App Version Name'
+        required: false
+        default: '1.0'
       icon_file_id:
         description: 'Telegram File ID, pwa, or default'
         required: true
-        default: 'pwa'
+        default: 'default'
       chat_id:
         description: 'Telegram Chat ID'
         required: true
+      progress_msg_id:
+        description: 'Pinned Progress Message ID'
+        required: false
+        default: ''
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Update Progress 25%
+        if: ${{ inputs.progress_msg_id != '' }}
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ inputs.chat_id }}
+          MSG_ID: ${{ inputs.progress_msg_id }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
+            -d chat_id="${CHAT_ID}" \
+            -d message_id="${MSG_ID}" \
+            -d parse_mode="HTML" \
+            --data-urlencode "text=⏳ <b>APK তৈরি হচ্ছে... 25%</b>
+<code>[███░░░░░░░]</code>
+
+⚙️ <i>সার্ভার ও Java এনভায়রনমেন্ট প্রস্তুত হচ্ছে...</i>" >/dev/null || true
+
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Gradle 8.7
+      - name: Setup Gradle 8.7 with Fast Cache
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+          cache-read-only: false
 
-      - name: Install Python Helpers
-        run: pip install --quiet pillow requests beautifulsoup4
+      - name: Install Pillow & Requests
+        run: python3 -c "import PIL, requests" 2>/dev/null || pip install --quiet pillow requests
 
-      - name: Generate Android WebView Project with Kill-Switch & PWA Icons
+      - name: Generate Android Project
         env:
+          BUILD_MODE: ${{ inputs.build_mode }}
           APP_NAME: ${{ inputs.app_name }}
           WEB_URL: ${{ inputs.web_url }}
+          HTML_FILE_ID: ${{ inputs.html_file_id }}
+          HTML_CODE: ${{ inputs.html_code }}
           PKG_NAME: ${{ inputs.package_name }}
+          APP_VER: ${{ inputs.app_version }}
           ICON_ID: ${{ inputs.icon_file_id }}
           CHAT_ID: ${{ inputs.chat_id }}
+          MSG_ID: ${{ inputs.progress_msg_id }}
           GH_REPO: ${{ github.repository }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
           python3 - << 'PYEOF'
-          import os, requests
+          import os, re, json, requests
+          from html.parser import HTMLParser
           from urllib.parse import urljoin, urlparse
           from xml.sax.saxutils import escape
-          from bs4 import BeautifulSoup
           from PIL import Image, ImageDraw
           from io import BytesIO
 
+          build_mode = os.environ["BUILD_MODE"].strip()
           app_name = os.environ["APP_NAME"].strip()
           web_url = os.environ["WEB_URL"].strip()
-          pkg_name = os.environ["PKG_NAME"].strip()
+          html_file_id = os.environ["HTML_FILE_ID"].strip()
+          html_code = os.environ["HTML_CODE"]
+          pkg_name = os.environ["PKG_NAME"].strip().lower()
+          app_ver = re.sub(r'[^0-9.]', '', os.environ.get("APP_VER", "1.0").strip()) or "1.0"
           icon_id = os.environ["ICON_ID"].strip()
           chat_id = os.environ["CHAT_ID"].strip()
+          msg_id = os.environ["MSG_ID"].strip()
           gh_repo = os.environ["GH_REPO"].strip()
           bot_token = os.environ["BOT_TOKEN"].strip()
 
@@ -69,10 +117,30 @@ jobs:
           os.makedirs("app/src/main/res/values", exist_ok=True)
           os.makedirs("app/src/main/res/drawable-xxxhdpi", exist_ok=True)
           os.makedirs("app/src/main/res/mipmap-anydpi-v26", exist_ok=True)
+          os.makedirs("app/src/main/assets", exist_ok=True)
           for d in ["mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"]:
               os.makedirs(f"app/src/main/res/mipmap-{d}", exist_ok=True)
 
-          # 1. settings.gradle
+          target_load_url = web_url
+          if build_mode == "html":
+              target_load_url = "file:///android_asset/index.html"
+              html_saved = False
+              if html_file_id and html_file_id != "none":
+                  try:
+                      r = requests.get(f"https://api.telegram.org/bot{bot_token}/getFile?file_id={html_file_id}", timeout=15).json()
+                      if r.get("ok"):
+                          fpath = r["result"]["file_path"]
+                          hdata = requests.get(f"https://api.telegram.org/file/bot{bot_token}/{fpath}", timeout=20).content
+                          with open("app/src/main/assets/index.html", "wb") as hf:
+                              hf.write(hdata)
+                          html_saved = True
+                  except Exception:
+                      pass
+              if not html_saved:
+                  content = html_code if (html_code and html_code != "none") else "<h1>Hello World</h1>"
+                  with open("app/src/main/assets/index.html", "w", encoding="utf-8") as hf:
+                      hf.write(content)
+
           with open("settings.gradle", "w") as f:
               f.write('''pluginManagement {
               repositories {
@@ -92,18 +160,21 @@ jobs:
           include ':app'
           ''')
 
-          # 2. build.gradle (root)
           with open("build.gradle", "w") as f:
               f.write('''plugins {
               id 'com.android.application' version '8.5.2' apply false
           }
           ''')
 
-          # 3. gradle.properties
           with open("gradle.properties", "w") as f:
-              f.write("org.gradle.jvmargs=-Xmx2048m\nandroid.useAndroidX=false\n")
+              f.write(
+                  "org.gradle.jvmargs=-Xmx3072m -XX:+UseParallelGC\n"
+                  "org.gradle.parallel=true\n"
+                  "org.gradle.caching=true\n"
+                  "org.gradle.configureondemand=true\n"
+                  "android.useAndroidX=false\n"
+              )
 
-          # 4. app/build.gradle
           with open("app/build.gradle", "w") as f:
               f.write(f'''plugins {{
               id 'com.android.application'
@@ -116,7 +187,7 @@ jobs:
                   minSdk 21
                   targetSdk 34
                   versionCode 1
-                  versionName "1.0"
+                  versionName "{app_ver}"
               }}
               buildTypes {{
                   debug {{
@@ -130,7 +201,6 @@ jobs:
           }}
           ''')
 
-          # 5. AndroidManifest.xml
           with open("app/src/main/AndroidManifest.xml", "w") as f:
               f.write('''<?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -156,7 +226,6 @@ jobs:
           </manifest>
           ''')
 
-          # 6. strings.xml & colors.xml
           safe_app_name = escape(app_name).replace("'", "\\'")
           with open("app/src/main/res/values/strings.xml", "w") as f:
               f.write(f'''<?xml version="1.0" encoding="utf-8"?>
@@ -172,7 +241,6 @@ jobs:
           </resources>
           ''')
 
-          # 7. Adaptive Icon XML
           adaptive_xml = '''<?xml version="1.0" encoding="utf-8"?>
           <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
               <background android:drawable="@color/ic_launcher_background"/>
@@ -184,8 +252,7 @@ jobs:
           with open("app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml", "w") as f:
               f.write(adaptive_xml)
 
-          # 8. MainActivity.java (Remote Ban Kill-Switch সহ)
-          safe_url = web_url.replace("\\", "\\\\").replace('"', '\\"')
+          safe_url = target_load_url.replace("\\", "\\\\").replace('"', '\\"')
           ban_check_url = f"https://raw.githubusercontent.com/{gh_repo}/main/bans/{chat_id}.txt"
 
           java_code = f'''package {pkg_name};
@@ -216,6 +283,8 @@ jobs:
                   settings.setDomStorageEnabled(true);
                   settings.setDatabaseEnabled(true);
                   settings.setAllowFileAccess(true);
+                  settings.setAllowFileAccessFromFileURLs(true);
+                  settings.setAllowUniversalAccessFromFileURLs(true);
                   settings.setLoadWithOverviewMode(true);
                   settings.setUseWideViewPort(true);
 
@@ -224,7 +293,7 @@ jobs:
                       @Override
                       public boolean shouldOverrideUrlLoading(WebView view, String url) {{
                           if (isBanned) return true;
-                          if (url.startsWith("http://") || url.startsWith("https://")) {{
+                          if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("file://")) {{
                               return false;
                           }}
                           try {{
@@ -237,7 +306,6 @@ jobs:
 
                   webView.loadUrl("{safe_url}");
 
-                  // রিমোট ব্যান কিল-সুইচ চেক (GitHub থেকে)
                   new Thread(new Runnable() {{
                       @Override
                       public void run() {{
@@ -279,7 +347,18 @@ jobs:
           with open(f"app/src/main/java/{pkg_path}/MainActivity.java", "w") as f:
               f.write(java_code)
 
-          # 9. Smart Icon Fetcher
+          class IconParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.links = []
+              def handle_starttag(self, tag, attrs):
+                  if tag.lower() == "link":
+                      d = {k.lower(): v for k, v in attrs if v}
+                      rel = d.get("rel", "").lower()
+                      href = d.get("href", "")
+                      if href and ("manifest" in rel or "icon" in rel):
+                          self.links.append((rel, href))
+
           base_img = None
           headers = {"User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36"}
 
@@ -293,22 +372,24 @@ jobs:
               except Exception:
                   pass
 
-          if base_img is None and icon_id == "pwa":
+          if base_img is None and icon_id == "pwa" and build_mode == "url":
               candidate_urls = []
               try:
-                  resp = requests.get(web_url, headers=headers, timeout=10)
-                  soup = BeautifulSoup(resp.text, "html.parser")
-                  man_tag = soup.find("link", rel=lambda x: x and "manifest" in str(x).lower())
-                  if man_tag and man_tag.get("href"):
-                      man_url = urljoin(web_url, man_tag["href"])
-                      man_data = requests.get(man_url, headers=headers, timeout=8).json()
-                      for ic in man_data.get("icons", []):
-                          if ic.get("src"):
-                              candidate_urls.append(urljoin(man_url, ic["src"]))
-                  for rel_name in ["apple-touch-icon", "icon", "shortcut icon"]:
-                      for tag in soup.find_all("link", rel=lambda x: x and rel_name in str(x).lower()):
-                          if tag.get("href"):
-                              candidate_urls.append(urljoin(web_url, tag["href"]))
+                  resp = requests.get(web_url, headers=headers, timeout=8)
+                  parser = IconParser()
+                  parser.feed(resp.text)
+                  for rel, href in parser.links:
+                      if "manifest" in rel:
+                          man_url = urljoin(web_url, href)
+                          try:
+                              man_data = requests.get(man_url, headers=headers, timeout=6).json()
+                              for ic in man_data.get("icons", []):
+                                  if ic.get("src"):
+                                      candidate_urls.append(urljoin(man_url, ic["src"]))
+                          except Exception:
+                              pass
+                      else:
+                          candidate_urls.append(urljoin(web_url, href))
               except Exception:
                   pass
 
@@ -319,7 +400,7 @@ jobs:
 
               for i_url in candidate_urls:
                   try:
-                      ir = requests.get(i_url, headers=headers, timeout=8)
+                      ir = requests.get(i_url, headers=headers, timeout=6)
                       if ir.status_code == 200 and len(ir.content) > 200:
                           test_img = Image.open(BytesIO(ir.content)).convert("RGBA")
                           if test_img.size[0] >= 32:
@@ -348,28 +429,65 @@ jobs:
           fg_inner = base_img.resize((280, 280), Image.LANCZOS)
           fg_canvas.paste(fg_inner, (76, 76), fg_inner)
           fg_canvas.save("app/src/main/res/drawable-xxxhdpi/ic_launcher_foreground.png", "PNG")
+
+          if msg_id:
+              try:
+                  requests.post(
+                      f"https://api.telegram.org/bot{bot_token}/editMessageText",
+                      json={
+                          "chat_id": chat_id,
+                          "message_id": int(msg_id),
+                          "parse_mode": "HTML",
+                          "text": "⏳ <b>APK তৈরি হচ্ছে... 60%</b>\n<code>[██████░░░░]</code>\n\n🔨 <i>APK ফাইল কম্পাইল শুরু হচ্ছে...</i>"
+                      },
+                      timeout=5
+                  )
+              except Exception:
+                  pass
           PYEOF
 
-      - name: Accept Android Licenses & Build APK
+      - name: Compile APK with Fast Build Cache
         run: |
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true
-          gradle assembleDebug --no-daemon
+          [ -d "$ANDROID_HOME/licenses" ] || yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true
+          gradle assembleDebug --build-cache --parallel --no-daemon
 
-      - name: Send APK to Telegram User
+      - name: Update Progress 100% & Send APK
         if: success()
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ inputs.chat_id }}
+          MSG_ID: ${{ inputs.progress_msg_id }}
           APP_NAME: ${{ inputs.app_name }}
+          APP_VER: ${{ inputs.app_version }}
+          PKG_NAME: ${{ inputs.package_name }}
+          BUILD_MODE: ${{ inputs.build_mode }}
           WEB_URL: ${{ inputs.web_url }}
         run: |
+          if [ -n "$MSG_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
+              -d chat_id="${CHAT_ID}" \
+              -d message_id="${MSG_ID}" \
+              -d parse_mode="HTML" \
+              --data-urlencode "text=✅ <b>APK তৈরি সম্পন্ন! 100%</b>
+<code>[██████████]</code>
+
+🚀 <i>আপনার .apk ফাইলটি নিচে পাঠানো হয়েছে!</i>" >/dev/null || true
+          fi
+
           SAFE_FILE=$(echo "$APP_NAME" | tr -cd '[:alnum:]_-')
           if [ -z "$SAFE_FILE" ]; then SAFE_FILE="WebApp"; fi
-          cp app/build/outputs/apk/debug/app-debug.apk "${SAFE_FILE}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "${SAFE_FILE}_v${APP_VER}.apk"
+
+          if [ "$BUILD_MODE" = "html" ]; then
+            CAP_LINE="🌐 <b>ধরন:</b> HTML Offline App"
+          else
+            CAP_LINE="🌐 <b>ওয়েবসাইট:</b> ${WEB_URL}"
+          fi
+
           curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
             -F chat_id="${CHAT_ID}" \
-            -F document=@"${SAFE_FILE}.apk" \
-            -F caption="🎉 <b>আপনার Android APK সফলভাবে তৈরি হয়েছে!</b>%0A%0A📱 <b>অ্যাপের নাম:</b> ${APP_NAME}%0A🌐 <b>ওয়েবসাইট:</b> ${WEB_URL}%0A%0A👇 ফাইলটি ডাউনলোড করে মোবাইলে ইনস্টল করুন!" \
+            -F document=@"${SAFE_FILE}_v${APP_VER}.apk" \
+            -F caption="🎉 <b>আপনার Android APK সফলভাবে তৈরি হয়েছে!</b>%0A%0A📱 <b>অ্যাপের নাম:</b> ${APP_NAME}%0A📦 <b>প্যাকেজ নেম:</b> <code>${PKG_NAME}</code>%0A🏷️ <b>ভার্সন:</b> v${APP_VER}%0A${CAP_LINE}%0A%0A👇 ফাইলটি ডাউনলোড করে মোবাইলে ইনস্টল করুন!" \
             -F parse_mode="HTML"
 
       - name: Notify Failure
@@ -377,7 +495,18 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ inputs.chat_id }}
+          MSG_ID: ${{ inputs.progress_msg_id }}
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -d chat_id="${CHAT_ID}" \
-            -d text="❌ দুঃখিত! APK ফাইল তৈরি করতে সার্ভার সমস্যা হয়েছে। অনুগ্রহ করে সঠিক ওয়েবসাইট লিংক দিয়ে আবার চেষ্টা করুন।"
+          if [ -n "$MSG_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
+              -d chat_id="${CHAT_ID}" \
+              -d message_id="${MSG_ID}" \
+              -d parse_mode="HTML" \
+              --data-urlencode "text=❌ <b>APK তৈরি ব্যর্থ হয়েছে!</b>
+
+সার্ভারে সমস্যা হয়েছে বা প্যাকেজ নেম/কোডে ভুল রয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।" >/dev/null || true
+          else
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -d chat_id="${CHAT_ID}" \
+              -d text="❌ দুঃখিত! APK ফাইল তৈরি করতে সমস্যা হয়েছে। আবার চেষ্টা করুন।" >/dev/null || true
+          fi
