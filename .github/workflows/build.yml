@@ -52,14 +52,8 @@ jobs:
           CHAT_ID: ${{ inputs.chat_id }}
           MSG_ID: ${{ inputs.progress_msg_id }}
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
-            -d chat_id="${CHAT_ID}" \
-            -d message_id="${MSG_ID}" \
-            -d parse_mode="HTML" \
-            --data-urlencode "text=⏳ <b>APK তৈরি হচ্ছে... 25%</b>
-<code>[███░░░░░░░]</code>
-
-⚙️ <i>সার্ভার ও Java এনভায়রনমেন্ট প্রস্তুত হচ্ছে...</i>" >/dev/null || true
+          MSG_TXT="⏳ <b>APK তৈরি হচ্ছে... 25%</b>%0A<code>[███░░░░░░░]</code>%0A%0A⚙️ <i>সার্ভার ও Java এনভায়রনমেন্ট প্রস্তুত হচ্ছে...</i>"
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "parse_mode=HTML" -d "text=${MSG_TXT}" >/dev/null || true
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -141,7 +135,7 @@ jobs:
                   with open("app/src/main/assets/index.html", "w", encoding="utf-8") as hf:
                       hf.write(content)
 
-          with open("settings.gradle", "w") as f:
+          with open("settings.gradle", "w", encoding="utf-8") as f:
               f.write('''pluginManagement {
               repositories {
                   google()
@@ -160,13 +154,13 @@ jobs:
           include ':app'
           ''')
 
-          with open("build.gradle", "w") as f:
+          with open("build.gradle", "w", encoding="utf-8") as f:
               f.write('''plugins {
               id 'com.android.application' version '8.5.2' apply false
           }
           ''')
 
-          with open("gradle.properties", "w") as f:
+          with open("gradle.properties", "w", encoding="utf-8") as f:
               f.write(
                   "org.gradle.jvmargs=-Xmx3072m -XX:+UseParallelGC\n"
                   "org.gradle.parallel=true\n"
@@ -175,7 +169,7 @@ jobs:
                   "android.useAndroidX=false\n"
               )
 
-          with open("app/build.gradle", "w") as f:
+          with open("app/build.gradle", "w", encoding="utf-8") as f:
               f.write(f'''plugins {{
               id 'com.android.application'
           }}
@@ -199,9 +193,12 @@ jobs:
                   targetCompatibility JavaVersion.VERSION_17
               }}
           }}
+          tasks.withType(JavaCompile) {{
+              options.encoding = 'UTF-8'
+          }}
           ''')
 
-          with open("app/src/main/AndroidManifest.xml", "w") as f:
+          with open("app/src/main/AndroidManifest.xml", "w", encoding="utf-8") as f:
               f.write('''<?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
@@ -227,14 +224,14 @@ jobs:
           ''')
 
           safe_app_name = escape(app_name).replace("'", "\\'")
-          with open("app/src/main/res/values/strings.xml", "w") as f:
+          with open("app/src/main/res/values/strings.xml", "w", encoding="utf-8") as f:
               f.write(f'''<?xml version="1.0" encoding="utf-8"?>
           <resources>
               <string name="app_name">{safe_app_name}</string>
           </resources>
           ''')
 
-          with open("app/src/main/res/values/colors.xml", "w") as f:
+          with open("app/src/main/res/values/colors.xml", "w", encoding="utf-8") as f:
               f.write('''<?xml version="1.0" encoding="utf-8"?>
           <resources>
               <color name="ic_launcher_background">#FFFFFF</color>
@@ -247,9 +244,9 @@ jobs:
               <foreground android:drawable="@drawable/ic_launcher_foreground"/>
           </adaptive-icon>
           '''
-          with open("app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml", "w") as f:
+          with open("app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml", "w", encoding="utf-8") as f:
               f.write(adaptive_xml)
-          with open("app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml", "w") as f:
+          with open("app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml", "w", encoding="utf-8") as f:
               f.write(adaptive_xml)
 
           safe_url = target_load_url.replace("\\", "\\\\").replace('"', '\\"')
@@ -321,7 +318,7 @@ jobs:
                                       @Override
                                       public void run() {{
                                           webView.stopLoading();
-                                          String blockedHtml = "<html><body style='background:#111827;color:#fff;font-family:sans-serif;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;text-align:center;margin:0;padding:24px;'><div style='font-size:64px;'>&#128683;</div><h2 style='color:#ef4444;margin-bottom:10px;'>অ্যাপটি বন্ধ করা হয়েছে!</h2><p style='color:#d1d5db;font-size:16px;'>নিয়ম ভঙ্গ বা সমস্যার কারণে অ্যাডমিন এই অ্যাপটি স্থায়ীভাবে ব্লক (Ban) করেছেন।</p></body></html>";
+                                          String blockedHtml = "<html><body style='background:#111827;color:#fff;font-family:sans-serif;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;text-align:center;margin:0;padding:24px;'><div style='font-size:64px;'>&#128683;</div><h2 style='color:#ef4444;margin-bottom:10px;'>App Blocked!</h2><p style='color:#d1d5db;font-size:16px;'>Admin has banned this application.</p></body></html>";
                                           webView.loadDataWithBaseURL(null, blockedHtml, "text/html", "UTF-8", null);
                                       }}
                                   }});
@@ -344,7 +341,7 @@ jobs:
               }}
           }}
           '''
-          with open(f"app/src/main/java/{pkg_path}/MainActivity.java", "w") as f:
+          with open(f"app/src/main/java/{pkg_path}/MainActivity.java", "w", encoding="utf-8") as f:
               f.write(java_code)
 
           class IconParser(HTMLParser):
@@ -464,14 +461,8 @@ jobs:
           WEB_URL: ${{ inputs.web_url }}
         run: |
           if [ -n "$MSG_ID" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
-              -d chat_id="${CHAT_ID}" \
-              -d message_id="${MSG_ID}" \
-              -d parse_mode="HTML" \
-              --data-urlencode "text=✅ <b>APK তৈরি সম্পন্ন! 100%</b>
-<code>[██████████]</code>
-
-🚀 <i>আপনার .apk ফাইলটি নিচে পাঠানো হয়েছে!</i>" >/dev/null || true
+            DONE_TXT="✅ <b>APK তৈরি সম্পন্ন! 100%</b>%0A<code>[██████████]</code>%0A%0A🚀 <i>আপনার .apk ফাইলটি নিচে পাঠানো হয়েছে!</i>"
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "parse_mode=HTML" -d "text=${DONE_TXT}" >/dev/null || true
           fi
 
           SAFE_FILE=$(echo "$APP_NAME" | tr -cd '[:alnum:]_-')
@@ -497,16 +488,9 @@ jobs:
           CHAT_ID: ${{ inputs.chat_id }}
           MSG_ID: ${{ inputs.progress_msg_id }}
         run: |
+          FAIL_TXT="❌ <b>APK তৈরি ব্যর্থ হয়েছে!</b>%0A%0Aসার্ভারে সমস্যা হয়েছে বা কোডে ভুল রয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
           if [ -n "$MSG_ID" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
-              -d chat_id="${CHAT_ID}" \
-              -d message_id="${MSG_ID}" \
-              -d parse_mode="HTML" \
-              --data-urlencode "text=❌ <b>APK তৈরি ব্যর্থ হয়েছে!</b>
-
-সার্ভারে সমস্যা হয়েছে বা প্যাকেজ নেম/কোডে ভুল রয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।" >/dev/null || true
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "parse_mode=HTML" -d "text=${FAIL_TXT}" >/dev/null || true
           else
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-              -d chat_id="${CHAT_ID}" \
-              -d text="❌ দুঃখিত! APK ফাইল তৈরি করতে সমস্যা হয়েছে। আবার চেষ্টা করুন।" >/dev/null || true
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" -d "chat_id=${CHAT_ID}" -d "parse_mode=HTML" -d "text=${FAIL_TXT}" >/dev/null || true
           fi
