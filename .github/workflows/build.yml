@@ -45,16 +45,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Update Progress 25%
-        if: ${{ inputs.progress_msg_id != '' }}
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ inputs.chat_id }}
-          MSG_ID: ${{ inputs.progress_msg_id }}
-        run: |
-          MSG_TXT="⏳ <b>APK তৈরি হচ্ছে... 25%</b>%0A<code>[███░░░░░░░]</code>%0A%0A⚙️ <i>সার্ভার ও Java এনভায়রনমেন্ট প্রস্তুত হচ্ছে...</i>"
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "parse_mode=HTML" -d "text=${MSG_TXT}" >/dev/null || true
-
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
@@ -81,7 +71,6 @@ jobs:
           APP_VER: ${{ inputs.app_version }}
           ICON_ID: ${{ inputs.icon_file_id }}
           CHAT_ID: ${{ inputs.chat_id }}
-          MSG_ID: ${{ inputs.progress_msg_id }}
           GH_REPO: ${{ github.repository }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
@@ -102,7 +91,6 @@ jobs:
           app_ver = re.sub(r'[^0-9.]', '', os.environ.get("APP_VER", "1.0").strip()) or "1.0"
           icon_id = os.environ["ICON_ID"].strip()
           chat_id = os.environ["CHAT_ID"].strip()
-          msg_id = os.environ["MSG_ID"].strip()
           gh_repo = os.environ["GH_REPO"].strip()
           bot_token = os.environ["BOT_TOKEN"].strip()
 
@@ -468,21 +456,6 @@ jobs:
           fg_inner = base_img.resize((280, 280), Image.LANCZOS)
           fg_canvas.paste(fg_inner, (76, 76), fg_inner)
           fg_canvas.save("app/src/main/res/drawable-xxxhdpi/ic_launcher_foreground.png", "PNG")
-
-          if msg_id:
-              try:
-                  requests.post(
-                      f"https://api.telegram.org/bot{bot_token}/editMessageText",
-                      json={
-                          "chat_id": chat_id,
-                          "message_id": int(msg_id),
-                          "parse_mode": "HTML",
-                          "text": "⏳ <b>APK তৈরি হচ্ছে... 60%</b>\n<code>[██████░░░░]</code>\n\n🔨 <i>APK ফাইল কম্পাইল শুরু হচ্ছে...</i>"
-                      },
-                      timeout=5
-                  )
-              except Exception:
-                  pass
           PYEOF
 
       - name: Compile APK with Fast Build Cache
@@ -502,26 +475,62 @@ jobs:
           BUILD_MODE: ${{ inputs.build_mode }}
           WEB_URL: ${{ inputs.web_url }}
         run: |
-          if [ -n "$MSG_ID" ]; then
-            DONE_TXT="✅ <b>APK তৈরি সম্পন্ন! 100%</b>%0A<code>[██████████]</code>%0A%0A🚀 <i>আপনার .apk ফাইলটি নিচে পাঠানো হয়েছে!</i>"
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "parse_mode=HTML" -d "text=${DONE_TXT}" >/dev/null || true
-          fi
+          python3 - << 'DONEPY'
+          import os, re, shutil, requests
+          from xml.sax.saxutils import escape
 
-          SAFE_FILE=$(echo "$APP_NAME" | tr -cd '[:alnum:]_-')
-          if [ -z "$SAFE_FILE" ]; then SAFE_FILE="WebApp"; fi
-          cp app/build/outputs/apk/debug/app-debug.apk "${SAFE_FILE}_v${APP_VER}.apk"
+          bot_token = os.environ["BOT_TOKEN"].strip()
+          chat_id = os.environ["CHAT_ID"].strip()
+          msg_id = os.environ.get("MSG_ID", "").strip()
+          app_name = os.environ["APP_NAME"].strip()
+          app_ver = re.sub(r'[^0-9.]', '', os.environ.get("APP_VER", "1.0").strip()) or "1.0"
+          pkg_name = os.environ["PKG_NAME"].strip().lower()
+          build_mode = os.environ["BUILD_MODE"].strip()
+          web_url = os.environ["WEB_URL"].strip()
 
-          if [ "$BUILD_MODE" = "html" ]; then
-            CAP_LINE="🌐 <b>ধরন:</b> HTML Offline App"
-          else
-            CAP_LINE="🌐 <b>ওয়েবসাইট:</b> ${WEB_URL}"
-          fi
+          if msg_id:
+              try:
+                  requests.post(
+                      f"https://api.telegram.org/bot{bot_token}/editMessageText",
+                      json={
+                          "chat_id": chat_id,
+                          "message_id": int(msg_id),
+                          "parse_mode": "HTML",
+                          "text": "✅ <b>APK তৈরি সম্পন্ন! 100%</b>\n<code>[██████████]</code>\n\n🚀 <i>আপনার .apk ফাইলটি নিচে পাঠানো হয়েছে!</i>"
+                      },
+                      timeout=10
+                  )
+              except Exception:
+                  pass
 
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
-            -F chat_id="${CHAT_ID}" \
-            -F document=@"${SAFE_FILE}_v${APP_VER}.apk" \
-            -F caption="🎉 <b>আপনার Android APK সফলভাবে তৈরি হয়েছে!</b>%0A%0A📱 <b>অ্যাপের নাম:</b> ${APP_NAME}%0A📦 <b>প্যাকেজ নেম:</b> <code>${PKG_NAME}</code>%0A🏷️ <b>ভার্সন:</b> v${APP_VER}%0A${CAP_LINE}%0A%0A👇 ফাইলটি ডাউনলোড করে মোবাইলে ইনস্টল করুন!" \
-            -F parse_mode="HTML"
+          safe_file = re.sub(r'[^a-zA-Z0-9_-]', '', app_name) or "WebApp"
+          out_apk = f"{safe_file}_v{app_ver}.apk"
+          shutil.copy("app/build/outputs/apk/debug/app-debug.apk", out_apk)
+
+          safe_name_html = escape(app_name)
+          safe_url_html = escape(web_url)
+          if build_mode == "html":
+              cap_line = "🌐 <b>ধরন:</b> HTML Offline App"
+          else:
+              cap_line = f"🌐 <b>ওয়েবসাইট:</b> {safe_url_html}"
+
+          final_caption = (
+              "🎉 <b>আপনার Android APK সফলভাবে তৈরি হয়েছে!</b>\n\n"
+              f"📱 <b>অ্যাপের নাম:</b> {safe_name_html}\n"
+              f"📦 <b>প্যাকেজ নেম:</b> <code>{pkg_name}</code>\n"
+              f"🏷️ <b>ভার্সন:</b> v{app_ver}\n"
+              f"{cap_line}\n\n"
+              "👇 ফাইলটি ডাউনলোড করে মোবাইলে ইনস্টল করুন!"
+          )
+
+          with open(out_apk, "rb") as apk_f:
+              requests.post(
+                  f"https://api.telegram.org/bot{bot_token}/sendDocument",
+                  data={"chat_id": chat_id, "caption": final_caption, "parse_mode": "HTML"},
+                  files={"document": (out_apk, apk_f)},
+                  timeout=60
+              )
+          DONEPY
 
       - name: Notify Failure
         if: failure()
@@ -530,9 +539,25 @@ jobs:
           CHAT_ID: ${{ inputs.chat_id }}
           MSG_ID: ${{ inputs.progress_msg_id }}
         run: |
-          FAIL_TXT="❌ <b>APK তৈরি ব্যর্থ হয়েছে!</b>%0A%0Aসার্ভারে সমস্যা হয়েছে বা প্যাকেজ নেম/কোডে ভুল রয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
-          if [ -n "$MSG_ID" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "parse_mode=HTML" -d "text=${FAIL_TXT}" >/dev/null || true
-          else
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" -d "chat_id=${CHAT_ID}" -d "parse_mode=HTML" -d "text=${FAIL_TXT}" >/dev/null || true
-          fi
+          python3 - << 'FAILPY'
+          import os, requests
+          bot_token = os.environ["BOT_TOKEN"].strip()
+          chat_id = os.environ["CHAT_ID"].strip()
+          msg_id = os.environ.get("MSG_ID", "").strip()
+          fail_txt = "❌ <b>APK তৈরি ব্যর্থ হয়েছে!</b>\n\nসার্ভারে সমস্যা হয়েছে বা প্যাকেজ নেম/কোডে ভুল রয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
+          try:
+              if msg_id:
+                  requests.post(
+                      f"https://api.telegram.org/bot{bot_token}/editMessageText",
+                      json={"chat_id": chat_id, "message_id": int(msg_id), "parse_mode": "HTML", "text": fail_txt},
+                      timeout=10
+                  )
+              else:
+                  requests.post(
+                      f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                      json={"chat_id": chat_id, "parse_mode": "HTML", "text": fail_txt},
+                      timeout=10
+                  )
+          except Exception:
+              pass
+          FAILPY
